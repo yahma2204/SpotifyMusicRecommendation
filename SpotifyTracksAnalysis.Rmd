@@ -1,0 +1,400 @@
+---
+title: "Spotify Tracks Clustering with KMeans"
+author: "Yahma Nurhasanah"
+date: "4/4/2022"
+output: 
+  rmdformats::readthedown
+---
+
+```{r setup, include=FALSE}
+options(width = 2000)
+hooks = knitr::knit_hooks$get()
+hook_foldable = function(type) {
+  force(type)
+  function(x, options) {
+    res = hooks[[type]](x, options)
+    
+    if (isFALSE(options[[paste0("fold.", type)]])) return(res)
+    
+    paste0(
+      "<details><summary>", type, "</summary>\n\n",
+      res,
+      "\n\n</details>"
+    )
+  }
+}
+knitr::knit_hooks$set(
+  output = hook_foldable("output"),
+  plot = hook_foldable("plot")
+)
+```
+
+```{css, echo=FALSE}
+.main-container {
+    max-width: 2000px !important;
+}
+
+pre {
+  max-height: 800px !important;
+  overflow-y: auto !important;
+  overflow-x: scroll !important;
+}
+pre code {
+  white-space: pre
+}
+```
+
+# Introduction
+
+Listening to music for some people is always be one of their activity in leisure times. Even, there are some people who called it their hobby. One of the most popular platform to listening to music is spotify. Spotify has a recommendation system which can customize their music's users according to their taste. In this case, we will try to make a music recommendation based on Spotify dataset. We will use K-Means Clustering algorithm which categorized into Unsupervised Learning in Machine Learning. 
+
+In this project, we will use these library : 
+```{r, warning=FALSE, message=FALSE}
+library(dplyr)
+library(GGally)
+library(inspectdf)
+library(ggiraphExtra)
+library(factoextra)
+```
+
+# About K-Means Clustering
+
+Clustering refers to the practice of finding meaningful ways to group data (or create subgroups) within a dataset - and the resulting groups are usually called clusters. The objective is to have a number of partitions where the observations that fall into each partition are similar to others in that group, while the partitions are distinctive from one another.
+
+K-means is a centroid-based clustering algorithm that follows a simple procedure of classifying a given dataset into a pre-determined number of clusters, denoted as “k”. This procedure is essentially a series of interations where we:
+
+1. Find cluster centers
+2. Compute distances between each point to each cluster centers
+3. Assign / re-assign cluster membership
+
+# Inspect Data
+
+For this project, we will using Spotify Tracks Data Base from [Kaggle]("https://www.kaggle.com/datasets/zaheenhamidani/ultimate-spotify-tracks-db"). This dataset was obtained from Spotify API in 2019. In this dataset, we have approximately 10,000 per genre, which it has 26 genres so it is a total of 232,725 tracks.
+
+```{r, fold.output=FALSE}
+spotify <- read.csv("SpotifyFeatures.csv",stringsAsFactors = T)
+head(spotify)
+```
+In this dataset, we have:
+
+- `ï..genre` : Genre
+- `artist_name` : Artist Name
+- `track_name` : Track Name
+- `track_id` : The Spotify ID for the track.
+- `popularity` : The popularity for the track.
+- `acousticness` : A confidence measure from 0.0 to 1.0 of whether the track is acoustic. 1.0 represents high confidence the track is acoustic.
+- `danceability` : Danceability describes how suitable a track is for dancing based on a combination of musical elements including tempo, rhythm stability, beat strength, and overall regularity. A value of 0.0 is least danceable and 1.0 is most danceable.
+- `duration_ms` : The duration of the track in milliseconds.
+- `energy` : Energy is a measure from 0.0 to 1.0 and represents a perceptual measure of intensity and activity. Typically, energetic tracks feel fast, loud, and noisy.
+- `instrumentalness` : Predicts whether a track contains no vocals. "Ooh" and "aah" sounds are treated as instrumental in this context. Rap or spoken word tracks are clearly "vocal".
+- `key` : The key the track is in.
+- `liveness` : Detects the presence of an audience in the recording. Higher liveness values represent an increased probability that the track was performed live
+- `loudness` : The overall loudness of a track in decibels (dB).
+- `mode` : Mode indicates the modality (major or minor) of a track, the type of scale from which its melodic content is derived.
+- `speechiness` : Speechiness detects the presence of spoken words in a track. The more exclusively speech-like the recording (e.g. talk show, audio book, poetry), the closer to 1.0 the attribute value.
+- `tempo` : The overall estimated tempo of a track in beats per minute (BPM).
+- `time_signature` : An estimated time signature. The time signature (meter) is a notational convention to specify how many beats are in each bar (or measure).
+- `valence` : A measure from 0.0 to 1.0 describing the musical positiveness conveyed by a track.
+
+# Data Cleaning
+First, we will adjust our data type.  
+```{r, fold.output=FALSE}
+# Adjust Data Type
+spotify <- spotify %>% 
+  mutate(artist_name = as.character(artist_name),
+         track_name = as.character(track_name),
+         track_id = as.character(track_id),
+         duration_ms = duration_ms/60000) %>% 
+  rename(genre = ï..genre,
+         duration_min = duration_ms)
+head(spotify)
+```
+Then, we will check if there is any missing value in our data set. 
+```{r, fold.output=FALSE}
+# Is there any missing value?
+colSums(is.na(spotify))
+```
+> As we can see, our dataset doesn't have any missing value.
+
+Last, We will assign column `track_id` to rownames because it has the most unique value. But, before we assign that column, we will try to remove the duplicated data first. Then, We will only using the numeric variables. So, we will filter the data to only numeric variables. We will use only numeric variables because k-means clustering will measure the cluster with distance that is numeric.
+
+```{r, fold.output=FALSE}
+# Remove duplicated data 
+spotify_clean <- spotify[!duplicated(spotify$track_id),]
+
+# Assign track_id into rownames
+rownames(spotify_clean) <- spotify_clean$track_id
+
+# Filter only numeric variables
+spotify_clean <- spotify_clean %>% 
+  select(where(is.numeric))
+head(spotify_clean)
+```
+
+# Exploratory Data Analysis
+
+## Correlation Matrix
+
+```{r, fold.plot=FALSE}
+spotify_clean %>% ggcorr(label = T)
+```
+
+> From the correlation matrix, We found some variables that have strong correlation with each other. The highest correlation is 0.8 for energy and loudness.
+
+## Data Distribution
+```{r, fold.plot=FALSE}
+spotify_clean %>% inspect_num() %>% show_plot()
+```
+
+> From the histograms, we can observe that each variable has different range of data, so we need to scale our dataset.
+
+# Data Preprocessing
+
+We want to know what is the optimum number of k for clustering, but the dataset is too large to be plot. So, we will doing sampling to reduce the amount of data. We will randomly choose 5% of the data.
+
+```{r, warning=FALSE, fold.output=FALSE}
+RNGkind(sample.kind = "Rounding")
+set.seed(205)
+
+index <- sample(x = nrow(spotify_clean), size = nrow(spotify_clean)*0.05)
+spotify_red <- spotify_clean[index,]
+```
+
+Because we want to use K-Means Clustering algorithm and our dataset doesn't have the same distribution, we must scaling our dataset first.
+```{r, fold.output=FALSE}
+# Scaling the data
+spotify_scale_red <- scale(spotify_red)
+```
+
+# Determine optimal cluster
+
+We will determine the optimal cluster with `fviz_nbclust()` function from `factoextra` package.
+```{r, fig.align='center', warning=FALSE, fold.plot=FALSE}
+# Elbow method
+fviz_nbclust(x = spotify_scale_red, 
+             FUNcluster = kmeans,
+             method = 'wss'
+               )
+```
+
+```{r, fig.align='center', fold.plot=FALSE}
+# Silhouette method
+fviz_nbclust(spotify_scale_red, 
+             kmeans, 
+             method= "silhouette")
+```
+
+> According to the plot with elbow method and silhouette method, the optimal number of cluster for our dataset is 3 cluster. 
+
+# K-Means Clustering for Reduced Dataset
+
+## Model Fitting
+
+```{r message=FALSE, warning=FALSE}
+# k-means with 3 clusters
+RNGkind(sample.kind = "Rounding")
+set.seed(100)
+
+spotify_kmeans_red <- kmeans(x = spotify_scale_red, centers = 3)
+```
+
+## K-Means Output:
+
+1. The number of observations per cluster
+
+```{r, fold.output=FALSE}
+# The number of observations per cluster
+spotify_kmeans_red$size
+```
+
+2. Location of the center of the cluster / centroid, commonly used for profiling clusters
+```{r, fold.output=FALSE}
+# Location of the center of the cluster / centroid
+spotify_kmeans_red$centers
+```
+
+3. Cluster label for each observation
+```{r, fold.output=FALSE}
+# clustering output (Cluster label for each observation)
+head(spotify_kmeans_red$cluster)
+```
+
+4. The number of repetitions (iterations) of the k-means algorithm until a stable cluster is produced
+```{r, fold.output=FALSE}
+# The number of repetitions (iterations) of the k-means algorithm until a stable cluster is produced
+spotify_kmeans_red$iter
+```
+
+## Goodness of fit
+
+```{r, fold.output=FALSE}
+# wss check 
+spotify_kmeans_red$withinss
+
+# bss/tss check 
+spotify_kmeans_red$betweenss/spotify_kmeans_red$totss
+```
+
+## Profilling 
+```{r, fold.output=FALSE}
+# Assign cluster column into the dataset
+spotify_red$cluster <- spotify_kmeans_red$cluster
+
+
+# Profilling with summarise data
+spotify_red %>% 
+  group_by(cluster) %>% 
+  summarise_all(mean)
+```
+
+```{r, fig.align='center', fold.plot=FALSE}
+fviz_cluster(object = spotify_kmeans_red,
+             data = spotify_red, labelsize = 1)
+```
+
+```{r, fold.output=FALSE}
+ggRadar(
+  data=spotify_red,
+  mapping = aes(colours = cluster),
+  interactive = T
+)
+```
+
+# K-Means Clustering for Full Dataset
+
+If we assume 5% of the data will generalize the full amount of the data, we will try to do k-means clustering to the full dataset.
+```{r, fold.output=FALSE}
+spotify_scale <- scale(spotify_clean)
+```
+
+## Model Fitting
+```{r message=FALSE, warning=FALSE, fold.output=FALSE}
+# k-means with 3 clusters
+RNGkind(sample.kind = "Rounding")
+set.seed(100)
+
+spotify_kmeans <- kmeans(x = spotify_scale, centers = 3)
+```
+
+## K-Means Output:
+
+1. The number of observations per cluster
+
+```{r, fold.output=FALSE}
+# The number of observations per cluster
+spotify_kmeans$size
+```
+
+2. Location of the center of the cluster / centroid, commonly used for profiling clusters
+```{r, fold.output=FALSE}
+# Location of the center of the cluster / centroid
+spotify_kmeans$centers
+```
+
+3. Cluster label for each observation
+```{r, fold.output=FALSE}
+# clustering output (Cluster label for each observation)
+head(spotify_kmeans$cluster)
+```
+
+4. The number of repetitions (iterations) of the k-means algorithm until a stable cluster is produced
+```{r, fold.output=FALSE}
+# The number of repetitions (iterations) of the k-means algorithm until a stable cluster is produced
+spotify_kmeans$iter
+```
+
+## Goodness of Fit
+
+```{r, fold.output=FALSE}
+#check wss
+spotify_kmeans$withinss
+
+#check bss/tss
+spotify_kmeans$betweenss/spotify_kmeans$totss
+```
+
+## Profilling
+
+```{r, fold.output=FALSE}
+# Assign cluster column into the dataset
+spotify_clean$cluster <- spotify_kmeans$cluster
+
+
+# Profilling with summarise data
+spotify_clean %>% 
+  group_by(cluster) %>% 
+  summarise_all(mean)
+```
+
+```{r, fig.align='center', fold.plot=FALSE}
+fviz_cluster(object = spotify_kmeans,
+             data = spotify_clean, labelsize = 1)
+```
+
+```{r, fold.output=FALSE}
+ggRadar(
+  data=spotify_clean,
+  mapping = aes(colours = cluster),
+  interactive = T
+)
+```
+
+### Characteristics of Clusters
+
+- Cluster 1 : Highest speechiness and liveness. Lowest Tempo, popularity, instrumentalness.
+- Cluster 2 : Highest energy, loudness, danceability, valence, tempo, and popularity.Lowest accousticness.
+- Cluster 3 : Highest acousticness and instrumentalness. Lowest speechiness, valence, danceability, energy, liveness, and loudness.
+
+# How Spotify Track Recommendation Works?
+
+First, we will combine our numerical dataset with our first spotify dataset, so it has column `track_name`, `artist_name`, and `genre`.
+```{r, fold.output=TRUE}
+# Remove Row Names
+spotify_clean$track_id <- rownames(spotify_clean)
+rownames(spotify_clean) <- NULL
+# Combine dataset
+spotify_track <- spotify %>% 
+  select(track_id, track_name, artist_name, genre) %>% 
+  left_join(spotify_clean, by = "track_id")
+head(spotify_track)
+```
+
+After our dataset for spotify track recommendation is ready, we will try to make our spotify track recommendation system. For example, I like to listen for Ariana Grande's song entitled "Break Free". So, we will try to search first, which cluster that has Ariana Grande - Break Free.
+
+```{r, fold.output=FALSE}
+spotify_cluster <- spotify_track %>% 
+  filter(track_name == "Break Free",
+         artist_name == "Ariana Grande") %>%
+  select(artist_name,track_name,cluster, genre) %>% 
+  head(1)
+spotify_cluster
+```
+
+It turns out that Ariana Grande - Break Free is in the cluster 2. Now, we want to listen to Justin Bieber's song, but we want to listen to a song that will fit our preference. 
+
+```{r, fold.output=FALSE}
+set.seed(100)
+spotify_track %>% 
+  filter(cluster == spotify_cluster$cluster, 
+         artist_name=="Justin Bieber") %>%
+  slice_sample(n = 3) %>% 
+  select(-track_id) %>% 
+  arrange(-popularity)
+```
+
+The output shows that the system recommend us to listen to Justin Bieber's song titled : `Stuck In The Moment`, `Sorry - Latino Remix`, and `Hold Tight`.
+
+
+# Conclusion
+
+- The optimum cluster based on the elbow method and silhouette method is 3 cluster.
+
+- The full dataset is generalized by the reduced dataset because we can see that $\frac{BSS}{TSS}$ didn't change that far. It is around 37%. 
+
+- From the k-means profilling for the full dataset, we can conclude that:
+
+  * For cluster 1, we can call it **Live Music** cluster. It has the highest liveness and speechiness. Highest liveness values represent highest probability that the track was performed live, so the songs in this cluster have live music ambience. 
+  
+  * For cluster 2, we can call it **Dance Music** cluster. It has the highest danceability, valence, tempo, energy, and loudness. So it would be fit if we want to dance. It is also has the highest valence and popularity. It shows us that most of the music in this cluster has the highest popularity among others. 
+  
+  * For cluster 3, we can call it **Music for Study** cluster. It has the highest acousticness and instrumentalness. It is also has the lowest speechiness so it would be fit for study because the music wouldn't disturb us.
